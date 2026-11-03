@@ -367,8 +367,7 @@
   </footer>
 
   <script>
-    // STEP 1: Replace this value with the Test URL from your n8n Webhook node.
-    // Keep using the Test URL while learning; switch to the Production URL only later.
+    // Production URL from the published n8n admission Webhook node.
     const WEBHOOK_URL = "https://saisharad.app.n8n.cloud/webhook/student-enquiry";
 
     const form = document.getElementById("admissionForm");
@@ -415,17 +414,68 @@ if (!turnstileToken) {
           body: payload
         });
 
-        if (!response.ok) {
-          throw new Error(`Request failed with status ${response.status}`);
+        // Read the response once. n8n may return JSON for success or errors.
+        const responseText = await response.text();
+        let responseData = {};
+
+        if (responseText) {
+          try {
+            responseData = JSON.parse(responseText);
+          } catch {
+            // Keep an empty object if the response is not JSON.
+            responseData = {};
+          }
         }
 
-        formStatus.textContent = "Thank you! Your admission enquiry has been submitted successfully.";
+        // A duplicate is an expected validation result, not a network failure.
+        if (
+          response.status === 409 ||
+          responseData.code === "DUPLICATE_EMAIL"
+        ) {
+          formStatus.textContent =
+            responseData.message ||
+            "This email address has already been used to submit an admission enquiry. Please use a different email address or contact our admissions team.";
+          formStatus.className = "status error";
+
+          // Turnstile tokens are single-use. Reset the widget so the visitor
+          // can correct the form and obtain a fresh token for another attempt.
+          if (window.turnstile) window.turnstile.reset();
+          return;
+        }
+
+        // Handle an explicit security-verification rejection, if returned.
+        if (
+          response.status === 403 ||
+          responseData.code === "TURNSTILE_FAILED"
+        ) {
+          formStatus.textContent =
+            responseData.message ||
+            "Security verification failed. Please complete the security check again.";
+          formStatus.className = "status error";
+          if (window.turnstile) window.turnstile.reset();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(
+            responseData.message ||
+            `Request failed with status ${response.status}`
+          );
+        }
+
+        formStatus.textContent =
+          responseData.message ||
+          "Thank you! Your admission enquiry has been submitted successfully.";
         formStatus.className = "status success";
         form.reset();
+        if (window.turnstile) window.turnstile.reset();
+
       } catch (error) {
         console.error("Admission form submission error:", error);
-        formStatus.textContent = "We couldn't submit your enquiry. Check that your n8n workflow is listening and that the Webhook URL and CORS settings are correct, then try again.";
+        formStatus.textContent =
+          "We're temporarily unable to process your request. Please check your internet connection and try again.";
         formStatus.className = "status error";
+        if (window.turnstile) window.turnstile.reset();
       } finally {
         submitButton.disabled = false;
         submitButton.innerHTML = "Submit enquiry&nbsp; ↗";
